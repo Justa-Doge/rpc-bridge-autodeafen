@@ -6,6 +6,24 @@
 
 Simple bridge that allows you to use Discord Rich Presence with Wine games/software.
 
+## AutoDeafen multi-IPC branch
+
+The `multi-ipc` branch is an AutoDeafen compatibility variant. It exposes
+Windows named pipes `discord-ipc-0` through `discord-ipc-9`, with an isolated
+worker process and log file for each additional endpoint. This lets AutoDeafen
+use a free Discord IPC endpoint when another mod, such as Eclipse, already owns
+`discord-ipc-0`.
+
+Endpoint 0 continues to run in the original service process. Worker logs are
+written to `C:\\windows\\logs\\bridge-ipc-N.log`, while endpoint 0 keeps using
+`C:\\windows\\logs\\bridge.log`. Discord frame contents are intentionally not
+written to those logs.
+
+This branch also retries when the native Discord socket is temporarily
+unavailable, handles an already-connected named-pipe client, and fixes partial
+writes to the native socket. It is based on rpc-bridge `v1.4.0.1` so the tested
+AutoDeafen build remains reproducible.
+
 Works by running a small program in the background that creates a [named pipe](https://learn.microsoft.com/en-us/windows/win32/ipc/named-pipes) `\\.\pipe\discord-ipc-0` inside the prefix and forwards all data to the pipe `/run/user/1000/discord-ipc-0`.
 
 This bridge takes advantage of the Windows service implementation in Wine, eliminating the need to manually run any programs.
