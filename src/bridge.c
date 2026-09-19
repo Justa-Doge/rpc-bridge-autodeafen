@@ -45,8 +45,6 @@
 #define force_inline \
 	__inline__       \
 		__attribute__((__always_inline__, __gnu_inline__))
-#define naked __attribute__((naked))
-
 #define BUFFER_LENGTH 2048
 
 typedef unsigned short sa_family_t;
@@ -69,6 +67,7 @@ LPTSTR GetErrorMessage();
 extern BOOL RunningAsService;
 BOOL RetryNewConnection;
 BOOL IsLinux;
+int BridgePipeIndex = 0;
 HANDLE hOut = NULL;
 HANDLE hIn = NULL;
 
@@ -86,22 +85,26 @@ static force_inline int linux_syscall(int num,
 	return ret;
 }
 
-static naked int darwin_syscall(int num,
-								long arg1, long arg2, long arg3,
-								long arg4, long arg5, long arg6)
+static force_inline long darwin_syscall(long num,
+									long arg1, long arg2, long arg3,
+									long arg4, long arg5, long arg6)
 {
+	register long rax __asm__("rax") = num;
+	register long rdi __asm__("rdi") = arg1;
+	register long rsi __asm__("rsi") = arg2;
+	register long rdx __asm__("rdx") = arg3;
 	register long r10 __asm__("r10") = arg4;
 	register long r8 __asm__("r8") = arg5;
 	register long r9 __asm__("r9") = arg6;
 	__asm__ __volatile__(
 		"syscall\n"
-		"jae noerror\n"
+		"jnc 1f\n"
 		"negq %%rax\n"
-		"noerror:\n"
-		"ret\n"
-		: "=a"(num)
-		: "a"(num), "D"(arg1), "S"(arg2), "d"(arg3), "r"(r10), "r"(r8), "r"(r9)
-		: "memory");
+		"1:\n"
+		: "+a"(rax)
+		: "D"(rdi), "S"(rsi), "d"(rdx), "r"(r10), "r"(r8), "r"(r9)
+		: "rcx", "r11", "memory");
+	return rax;
 }
 
 static inline int sys_read(int fd, void *buf, size_t count)
@@ -136,7 +139,7 @@ static inline int sys_close(int fd)
 		return darwin_syscall(__darwin_close, fd, 0, 0, 0, 0, 0);
 }
 
-static inline unsigned int *sys_mmap(unsigned int *addr, size_t length, int prot, int flags, int fd, off_t offset)
+static inline unsigned int *sys_mmap(unsigned int *addr, size_t length, int prot, int flags, int fd, long long offset)
 {
 	if (IsLinux)
 		return linux_syscall(__linux_mmap2, addr, length, prot, flags, fd, offset);
@@ -240,7 +243,7 @@ char *native_getenv(const char *name)
 				if (*env == '=')
 				{
 					env++;
-					result = strdup(env);
+					result = _strdup(env);
 					break;
 				}
 			}
@@ -255,7 +258,7 @@ char *native_getenv(const char *name)
 	return result;
 }
 
-void ConnectToSocket(int fd)
+BOOL ConnectToSocket(int fd)
 {
 	print("Connecting to socket\n");
 	const char *runtime;
@@ -362,8 +365,10 @@ void ConnectToSocket(int fd)
 			MessageBox(NULL, "Failed to connect to Discord",
 					   "Socket Connection failed",
 					   MB_OK | MB_ICONSTOP);
-		ExitProcess(1);
+		return FALSE;
 	}
+
+	return TRUE;
 }
 
 void PipeBufferInThread(LPVOID lpParam)
@@ -408,13 +413,10 @@ void PipeBufferInThread(LPVOID lpParam)
 
 		memcpy(buffer, l_buffer, read);
 
-		print("Reading %d bytes from unix pipe: \"", read);
-		for (int i = 0; i < read; i++)
-			print("%c", buffer[i]);
-		print("\"\n");
+		print("Read %d bytes from unix pipe\n", read);
 
 		DWORD dwWritten;
-		WINBOOL bResult = WriteFile(bt->hPipe, buffer, read, &dwWritten, NULL);
+		BOOL bResult = WriteFile(bt->hPipe, buffer, read, &dwWritten, NULL);
 		if (unlikely(bResult == FALSE))
 		{
 			if (GetLastError() == ERROR_BROKEN_PIPE)
@@ -439,7 +441,7 @@ void PipeBufferInThread(LPVOID lpParam)
 		while (dwWritten < read)
 		{
 			int last_written = dwWritten;
-			WINBOOL bResult = WriteFile(bt->hPipe, buffer + dwWritten, read - dwWritten, &dwWritten, NULL);
+			BOOL bResult = WriteFile(bt->hPipe, buffer + dwWritten, read - dwWritten, &dwWritten, NULL);
 			if (unlikely(bResult == FALSE))
 			{
 				if (GetLastError() == ERROR_BROKEN_PIPE)
@@ -478,7 +480,7 @@ void PipeBufferOutThread(LPVOID lpParam)
 	{
 		char buffer[BUFFER_LENGTH];
 		DWORD dwRead;
-		WINBOOL bResult = ReadFile(bt->hPipe, buffer, BUFFER_LENGTH, &dwRead, NULL);
+		BOOL bResult = ReadFile(bt->hPipe, buffer, BUFFER_LENGTH, &dwRead, NULL);
 		if (unlikely(bResult == FALSE))
 		{
 			if (GetLastError() == ERROR_BROKEN_PIPE)
@@ -493,10 +495,7 @@ void PipeBufferOutThread(LPVOID lpParam)
 			continue;
 		}
 
-		print("Writing %d bytes to unix pipe: \"", dwRead);
-		for (int i = 0; i < dwRead; i++)
-			print("%c", buffer[i]);
-		print("\"\n");
+		print("Writing %d bytes to unix pipe\n", dwRead);
 
 		memcpy(l_buffer, buffer, dwRead);
 		int written = sys_write(bt->fd, l_buffer, dwRead);
@@ -509,7 +508,7 @@ void PipeBufferOutThread(LPVOID lpParam)
 		while (written < dwRead)
 		{
 			int last_written = written;
-			written += sys_write(bt->fd, buffer + written, dwRead - written);
+			written += sys_write(bt->fd, l_buffer + written, dwRead - written);
 			if (unlikely(last_written == written))
 			{
 				print("Failed to write to socket: %s\n", GetErrorMessage());
@@ -522,26 +521,13 @@ void PipeBufferOutThread(LPVOID lpParam)
 
 void CreateBridge()
 {
-	LPCTSTR lpszPipename = TEXT("\\\\.\\pipe\\discord-ipc-0");
+	char pipeName[64];
+	snprintf(pipeName, sizeof(pipeName), "\\\\.\\pipe\\discord-ipc-%d", BridgePipeIndex);
+	LPCTSTR lpszPipename = pipeName;
 
 NewConnection:
-	if (GetNamedPipeInfo((HANDLE)lpszPipename,
-						 NULL, NULL,
-						 NULL, NULL))
-	{
-		print("Pipe already exists: %s\n",
-			  GetErrorMessage());
-		if (!RunningAsService)
-		{
-			MessageBox(NULL, GetErrorMessage(),
-					   "Pipe already exists",
-					   MB_OK | MB_ICONSTOP);
-		}
-		ExitProcess(1);
-	}
-
 	HANDLE hPipe =
-		CreateNamedPipe("\\\\.\\pipe\\discord-ipc-0",
+		CreateNamedPipe(pipeName,
 						PIPE_ACCESS_DUPLEX,
 						PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT,
 						PIPE_UNLIMITED_INSTANCES, BUFFER_LENGTH, BUFFER_LENGTH, 0, NULL);
@@ -561,7 +547,7 @@ NewConnection:
 
 	print("Pipe %s(%#x) created\n", lpszPipename, hPipe);
 	print("Waiting for pipe connection\n");
-	if (!ConnectNamedPipe(hPipe, NULL))
+	if (!ConnectNamedPipe(hPipe, NULL) && GetLastError() != ERROR_PIPE_CONNECTED)
 	{
 		print("Failed to connect to pipe: %s\n",
 			  GetErrorMessage());
@@ -612,7 +598,16 @@ NewConnection:
 
 	print("Socket %d created\n", fd);
 
-	ConnectToSocket(fd);
+	if (!ConnectToSocket(fd))
+	{
+		print("Discord socket unavailable for discord-ipc-%d; retrying\n",
+			  BridgePipeIndex);
+		sys_close(fd);
+		DisconnectNamedPipe(hPipe);
+		CloseHandle(hPipe);
+		Sleep(1000);
+		goto NewConnection;
+	}
 	print("Connected to Discord\n");
 
 	bridge_thread bt = {fd, hPipe};

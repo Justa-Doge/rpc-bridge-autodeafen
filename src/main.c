@@ -16,6 +16,7 @@ void InstallService(int ServiceStartType, LPCSTR Path);
 char *native_getenv(const char *name);
 void RemoveService();
 extern BOOL IsLinux;
+extern int BridgePipeIndex;
 
 LPTSTR GetErrorMessage()
 {
@@ -269,6 +270,26 @@ void HandleArguments(int argc, char *argv[])
 		CreateBridge();
 		ExitProcess(0);
 	}
+	else if (strcmp(argv[1], "--worker") == 0)
+	{
+		if (argc < 3)
+		{
+			print("No IPC endpoint provided\n");
+			ExitProcess(1);
+		}
+
+		BridgePipeIndex = atoi(argv[2]);
+		if (BridgePipeIndex < 1 || BridgePipeIndex > 9)
+		{
+			print("Invalid IPC endpoint: %s\n", argv[2]);
+			ExitProcess(1);
+		}
+
+		RunningAsService = TRUE;
+		print("Running endpoint worker for discord-ipc-%d\n", BridgePipeIndex);
+		CreateBridge();
+		ExitProcess(0);
+	}
 	else if (strcmp(argv[1], "--version") == 0)
 	{
 		/* Already shows the version */
@@ -310,7 +331,10 @@ void HandleArguments(int argc, char *argv[])
 int main(int argc, char *argv[])
 {
 	DetectWine();
-	char *logFilePath = "C:\\windows\\logs\\bridge.log";
+	char logFilePath[MAX_PATH] = "C:\\windows\\logs\\bridge.log";
+	if (argc > 2 && strcmp(argv[1], "--worker") == 0)
+		snprintf(logFilePath, sizeof(logFilePath),
+				 "C:\\windows\\logs\\bridge-ipc-%s.log", argv[2]);
 	g_logFile = fopen(logFilePath, "w");
 	if (g_logFile == NULL)
 	{

@@ -10,6 +10,42 @@ void CreateBridge();
 LPTSTR GetErrorMessage();
 extern BOOL IsLinux;
 
+void StartAdditionalBridgeWorkers()
+{
+	char modulePath[MAX_PATH];
+	if (!GetModuleFileNameA(NULL, modulePath, MAX_PATH))
+	{
+		print("Failed to locate bridge executable: %s\n", GetErrorMessage());
+		return;
+	}
+
+	for (int endpoint = 1; endpoint < 10; endpoint++)
+	{
+		char commandLine[MAX_PATH + 32];
+		snprintf(commandLine, sizeof(commandLine),
+				 "\"%s\" --worker %d", modulePath, endpoint);
+
+		STARTUPINFOA startupInfo;
+		PROCESS_INFORMATION processInfo;
+		ZeroMemory(&startupInfo, sizeof(startupInfo));
+		ZeroMemory(&processInfo, sizeof(processInfo));
+		startupInfo.cb = sizeof(startupInfo);
+
+		if (!CreateProcessA(modulePath, commandLine, NULL, NULL, FALSE,
+						CREATE_NO_WINDOW, NULL, NULL, &startupInfo, &processInfo))
+		{
+			print("Failed to start discord-ipc-%d worker: %s\n",
+				  endpoint, GetErrorMessage());
+			continue;
+		}
+
+		print("Started discord-ipc-%d worker (PID %lu)\n",
+			  endpoint, processInfo.dwProcessId);
+		CloseHandle(processInfo.hThread);
+		CloseHandle(processInfo.hProcess);
+	}
+}
+
 void WINAPI ServiceCtrlHandler(DWORD CtrlCode)
 {
 	switch (CtrlCode)
@@ -38,6 +74,7 @@ void WINAPI ServiceCtrlHandler(DWORD CtrlCode)
 DWORD WINAPI ServiceWorkerThread(LPVOID lpParam)
 {
 	print("Service started\n");
+	StartAdditionalBridgeWorkers();
 	CreateBridge();
 	return ERROR_SUCCESS;
 }
