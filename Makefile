@@ -1,4 +1,4 @@
-.PHONY: all build clean
+.PHONY: all build clean package
 
 all:
 	$(MAKE) -C src all
@@ -8,3 +8,6 @@ build:
 
 clean:
 	$(MAKE) -C src clean
+
+package: build
+	./packaging/build-package.sh

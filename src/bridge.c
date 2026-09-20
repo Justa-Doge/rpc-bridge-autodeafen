@@ -263,7 +263,14 @@ BOOL ConnectToSocket(int fd)
 	print("Connecting to socket\n");
 	const char *runtime;
 	if (IsLinux)
+	{
 		runtime = native_getenv("XDG_RUNTIME_DIR");
+		if (runtime == NULL || runtime[0] == '\0')
+		{
+			print("XDG_RUNTIME_DIR is not set; Discord IPC is unavailable\n");
+			return FALSE;
+		}
+	}
 	else
 	{
 		runtime = native_getenv("TMPDIR");
@@ -415,33 +422,12 @@ void PipeBufferInThread(LPVOID lpParam)
 
 		print("Read %d bytes from unix pipe\n", read);
 
-		DWORD dwWritten;
-		BOOL bResult = WriteFile(bt->hPipe, buffer, read, &dwWritten, NULL);
-		if (unlikely(bResult == FALSE))
+		DWORD totalWritten = 0;
+		while (totalWritten < (DWORD)read)
 		{
-			if (GetLastError() == ERROR_BROKEN_PIPE)
-			{
-				RetryNewConnection = TRUE;
-				print("In Broken pipe\n");
-				break;
-			}
-
-			print("Failed to read from pipe: %s\n", GetErrorMessage());
-			Sleep(1000);
-			continue;
-		}
-
-		if (unlikely(dwWritten < 0))
-		{
-			print("Failed to write to pipe: %s\n", GetErrorMessage());
-			Sleep(1000);
-			continue;
-		}
-
-		while (dwWritten < read)
-		{
-			int last_written = dwWritten;
-			BOOL bResult = WriteFile(bt->hPipe, buffer + dwWritten, read - dwWritten, &dwWritten, NULL);
+			DWORD chunkWritten = 0;
+			BOOL bResult = WriteFile(bt->hPipe, buffer + totalWritten,
+								 read - totalWritten, &chunkWritten, NULL);
 			if (unlikely(bResult == FALSE))
 			{
 				if (GetLastError() == ERROR_BROKEN_PIPE)
@@ -451,18 +437,23 @@ void PipeBufferInThread(LPVOID lpParam)
 					break;
 				}
 
-				print("Failed to read from pipe: %s\n", GetErrorMessage());
-				Sleep(1000);
-				continue;
+				print("Failed to write to pipe: %s\n", GetErrorMessage());
+				RetryNewConnection = TRUE;
+				break;
 			}
 
-			if (unlikely(last_written == dwWritten))
+			if (unlikely(chunkWritten == 0))
 			{
-				print("Failed to write to pipe: %s\n", GetErrorMessage());
-				Sleep(1000);
-				continue;
+				print("Pipe write made no progress\n");
+				RetryNewConnection = TRUE;
+				break;
 			}
+
+			totalWritten += chunkWritten;
 		}
+
+		if (RetryNewConnection)
+			break;
 	}
 }
 
@@ -498,24 +489,23 @@ void PipeBufferOutThread(LPVOID lpParam)
 		print("Writing %d bytes to unix pipe\n", dwRead);
 
 		memcpy(l_buffer, buffer, dwRead);
-		int written = sys_write(bt->fd, l_buffer, dwRead);
-		if (unlikely(written < 0))
-		{
-			print("Failed to write to socket: %d\n", written);
-			continue;
-		}
-
+		DWORD written = 0;
 		while (written < dwRead)
 		{
-			int last_written = written;
-			written += sys_write(bt->fd, l_buffer + written, dwRead - written);
-			if (unlikely(last_written == written))
+			int chunkWritten = sys_write(bt->fd, l_buffer + written,
+								 dwRead - written);
+			if (unlikely(chunkWritten <= 0))
 			{
-				print("Failed to write to socket: %s\n", GetErrorMessage());
-				Sleep(1000);
-				continue;
+				print("Failed to write to socket: %d\n", chunkWritten);
+				RetryNewConnection = TRUE;
+				break;
 			}
+
+			written += chunkWritten;
 		}
+
+		if (RetryNewConnection)
+			break;
 	}
 }
 

@@ -2,3 +2,6 @@
 *.exe
 *.res
 *.elf
+.DS_Store
+build-multi/
+dist/

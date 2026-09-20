@@ -1,0 +1,31 @@
+AUTODEAFEN BRIDGE SETUP
+=======================
+
+This rpc-bridge build is intended for AutoDeafen running through Wine or
+Proton with a native Linux Discord client. It creates Windows Discord IPC
+endpoints 0 through 9 so AutoDeafen can coexist with another Discord RPC mod.
+
+Steam / Proton
+--------------
+
+1. Keep bridge.exe and bridge.sh together in a permanent folder whose path
+   contains no spaces.
+2. Make bridge.sh executable:
+
+   chmod +x "/absolute/path/to/bridge.sh"
+
+3. Add this to Geometry Dash's Steam Launch Options, preserving any other
+   options already in use:
+
+   "/absolute/path/to/bridge.sh" %command%
+
+4. Start Discord, then launch Geometry Dash through Steam.
+
+Wine Staging may be required depending on the Wine version. See AutoDeafen's
+bundled LINUX_SETUP.txt for Flatpak, Snap, log locations, and troubleshooting.
+
+Logs are written inside the active prefix at C:\windows\logs. Endpoint 0 uses
+bridge.log; endpoints 1 through 9 use bridge-ipc-N.log. This build does not log
+raw Discord frame contents.
+
+Source: https://github.com/Justa-Doge/rpc-bridge-autodeafen/tree/multi-ipc

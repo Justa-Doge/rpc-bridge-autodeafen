@@ -62,13 +62,13 @@ Logs are stored in `C:\windows\logs\bridge.log`.
 
 - If you are running Steam, Lutris, etc in a Flatpak, you will need to allow the bridge to access the `/run/user/1000/discord-ipc-0` file.
 	- ##### By using [Flatseal](https://flathub.org/apps/details/com.github.tchx84.Flatseal)
-		- Add `xdg-run/discord-ipc-0`, `xdg-run/.flatpak/dev.vencord.Vesktop:create` and `xdg-run/.flatpak/com.discordapp.Discord:create` under `Filesystems` category
+		- Add `xdg-run/discord-ipc-0` and `xdg-run/.flatpak/com.discordapp.Discord:create` under `Filesystems` category
 			- ![flatseal](docs/assets/flatseal_permission.png)
 	- ##### By using the terminal
 		- Per application
-			- `flatpak override --filesystem=xdg-run/discord-ipc-0 --filesystem=xdg-run/.flatpak/dev.vencord.Vesktop:create --filesystem=xdg-run/.flatpak/com.discordapp.Discord:create <flatpak app name>`
+			- `flatpak override --filesystem=xdg-run/discord-ipc-0 --filesystem=xdg-run/.flatpak/com.discordapp.Discord:create <flatpak app name>`
 		- Globally
-			- `flatpak override --user --filesystem=xdg-run/discord-ipc-0 --filesystem=xdg-run/.flatpak/dev.vencord.Vesktop:create --filesystem=xdg-run/.flatpak/com.discordapp.Discord:create`
+			- `flatpak override --user --filesystem=xdg-run/discord-ipc-0 --filesystem=xdg-run/.flatpak/com.discordapp.Discord:create`
 
 ##### MacOS
 
@@ -89,6 +89,15 @@ More details on how to install the LaunchAgent can be found in the [documentatio
 - Install the `wine`, `gcc-mingw-w64` and `make` packages.
 - Open a terminal in the directory that contains this file and run `make`.
 - The compiled executable will be located in `build/bridge.exe`.
+
+To create the final distributable folder, ZIP, and checksum file, run:
+
+```sh
+./packaging/build-package.sh
+```
+
+The results are written to `dist/`. GitHub Actions runs the same packaging
+script and automatically attaches the ZIP and checksum to version-tag releases.
 
 ## Star History
 

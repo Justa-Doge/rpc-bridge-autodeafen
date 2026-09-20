@@ -4,6 +4,7 @@
 
 SERVICE_STATUS g_ServiceStatus;
 SERVICE_STATUS_HANDLE g_StatusHandle = NULL;
+HANDLE g_WorkerJob = NULL;
 
 void print(char const *fmt, ...);
 void CreateBridge();
@@ -12,6 +13,25 @@ extern BOOL IsLinux;
 
 void StartAdditionalBridgeWorkers()
 {
+	g_WorkerJob = CreateJobObjectA(NULL, NULL);
+	if (g_WorkerJob == NULL)
+	{
+		print("Failed to create worker job: %s\n", GetErrorMessage());
+		return;
+	}
+
+	JOBOBJECT_EXTENDED_LIMIT_INFORMATION jobInfo;
+	ZeroMemory(&jobInfo, sizeof(jobInfo));
+	jobInfo.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+	if (!SetInformationJobObject(g_WorkerJob, JobObjectExtendedLimitInformation,
+							 &jobInfo, sizeof(jobInfo)))
+	{
+		print("Failed to configure worker job: %s\n", GetErrorMessage());
+		CloseHandle(g_WorkerJob);
+		g_WorkerJob = NULL;
+		return;
+	}
+
 	char modulePath[MAX_PATH];
 	if (!GetModuleFileNameA(NULL, modulePath, MAX_PATH))
 	{
@@ -32,10 +52,31 @@ void StartAdditionalBridgeWorkers()
 		startupInfo.cb = sizeof(startupInfo);
 
 		if (!CreateProcessA(modulePath, commandLine, NULL, NULL, FALSE,
-						CREATE_NO_WINDOW, NULL, NULL, &startupInfo, &processInfo))
+							CREATE_NO_WINDOW | CREATE_SUSPENDED,
+							NULL, NULL, &startupInfo, &processInfo))
 		{
 			print("Failed to start discord-ipc-%d worker: %s\n",
 				  endpoint, GetErrorMessage());
+			continue;
+		}
+
+		if (!AssignProcessToJobObject(g_WorkerJob, processInfo.hProcess))
+		{
+			print("Failed to manage discord-ipc-%d worker: %s\n",
+				  endpoint, GetErrorMessage());
+			TerminateProcess(processInfo.hProcess, 1);
+			CloseHandle(processInfo.hThread);
+			CloseHandle(processInfo.hProcess);
+			continue;
+		}
+
+		if (ResumeThread(processInfo.hThread) == (DWORD)-1)
+		{
+			print("Failed to resume discord-ipc-%d worker: %s\n",
+				  endpoint, GetErrorMessage());
+			TerminateProcess(processInfo.hProcess, 1);
+			CloseHandle(processInfo.hThread);
+			CloseHandle(processInfo.hProcess);
 			continue;
 		}
 
@@ -46,23 +87,36 @@ void StartAdditionalBridgeWorkers()
 	}
 }
 
+void StopAdditionalBridgeWorkers()
+{
+	if (g_WorkerJob == NULL)
+		return;
+
+	print("Stopping additional IPC workers\n");
+	CloseHandle(g_WorkerJob);
+	g_WorkerJob = NULL;
+}
+
 void WINAPI ServiceCtrlHandler(DWORD CtrlCode)
 {
 	switch (CtrlCode)
 	{
 	case SERVICE_CONTROL_STOP:
-	case SERVICE_ACCEPT_SHUTDOWN:
+	case SERVICE_CONTROL_SHUTDOWN:
 	{
 		g_ServiceStatus.dwCurrentState = SERVICE_STOP_PENDING;
+		g_ServiceStatus.dwControlsAccepted = 0;
 		SetServiceStatus(g_StatusHandle, &g_ServiceStatus);
 
 		print("Stopping service\n");
-
-		/* ... */
+		StopAdditionalBridgeWorkers();
 
 		g_ServiceStatus.dwCurrentState = SERVICE_STOPPED;
 		SetServiceStatus(g_StatusHandle, &g_ServiceStatus);
-		break;
+
+		/* The bridge can be blocked in Wine's native socket syscall. Ending the
+		 * service process releases endpoint 0 after the worker job is closed. */
+		ExitProcess(0);
 	}
 	default:
 	{
@@ -76,6 +130,7 @@ DWORD WINAPI ServiceWorkerThread(LPVOID lpParam)
 	print("Service started\n");
 	StartAdditionalBridgeWorkers();
 	CreateBridge();
+	StopAdditionalBridgeWorkers();
 	return ERROR_SUCCESS;
 }
 
@@ -91,10 +146,6 @@ void ServiceMain(DWORD argc, LPTSTR *argv)
 	}
 
 	ZeroMemory(&g_ServiceStatus, sizeof(g_ServiceStatus));
-
-	g_ServiceStatus.dwServiceType = SERVICE_WIN32_OWN_PROCESS;
-	g_ServiceStatus.dwCurrentState = SERVICE_START_PENDING;
-	SetServiceStatus(g_StatusHandle, &g_ServiceStatus);
 
 	g_ServiceStatus.dwServiceType = SERVICE_WIN32_OWN_PROCESS;
 	g_ServiceStatus.dwCurrentState = SERVICE_START_PENDING;
